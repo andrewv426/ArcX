@@ -203,14 +203,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let inset = sidebarItem.isCollapsed ? titlebarHeight : 0
         if container.topInset != inset { container.topInset = inset }
         guard widthRestored, !sidebarItem.isCollapsed else { return }
-        let width = sidebarItem.viewController.view.frame.width
+        let width = sidebarWidth
         let stored = CGFloat(AppDefaults.store.double(forKey: Self.sidebarWidthKey))
         if Self.sidebarWidthRange.contains(width), abs(width - stored) >= 1 {
             AppDefaults.store.set(Double(width.rounded()), forKey: Self.sidebarWidthKey)
         }
     }
 
-    var sidebarWidth: CGFloat { sidebarItem.viewController.view.frame.width }
+    /// The sidebar's width as the split view defines it: the divider's position, which
+    /// `minimumThickness`/`maximumThickness` and `setPosition` use. Not the hosted view's width:
+    /// a floating (Liquid Glass) sidebar insets its view by a few points from the divider, and
+    /// remembering that smaller number would shrink the sidebar on every launch.
+    var sidebarWidth: CGFloat {
+        let splitView = splitViewController.splitView
+        var view: NSView? = sidebarItem.viewController.view
+        while let current = view, current.superview !== splitView { view = current.superview }
+        return (view ?? sidebarItem.viewController.view).frame.width
+    }
 
     /// Where the traffic lights end and how tall a row centred on them is, in window coordinates.
     private static func titlebarMetrics(of window: NSWindow, titlebarHeight: CGFloat) -> TitlebarMetrics {
