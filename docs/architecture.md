@@ -57,6 +57,8 @@ A crashed or sleeping tab costs one WebContent process, never the app.
 
 AppKit owns windows and the web view container, because `WKWebView` is an `NSView` and AppKit gives exact control of the title bar, panels and focus. SwiftUI draws what sits inside the sidebar and the command bar, hosted with `NSHostingView`. The app uses the AppKit lifecycle (`main.swift` and an app delegate), not SwiftUI's `App`, so tests can start it without a Dock icon or a visible window.
 
+`TabSession` (in `App/Engine`) owns one `WKWebView` and republishes its title, URL, loading state, progress and back/forward availability as an `@Observable` class, bridged from WebKit's KVO. The window hosts the page through `WebContainerView`, which only ever sees a plain `NSView`. All web views share one configuration from `WebViewFactory`: a persistent data store normally, an in-memory one for test runs.
+
 ## State and storage
 
 `BrowserState` is the single source of truth and is observable; views read it and never keep their own copy of tab data.
@@ -83,3 +85,5 @@ Lazy restore and sleeping arrive in M6.
 ## How web content is contained
 
 Pages run in WebKit's own sandboxed processes, separate from the app. The app itself is not under the App Sandbox while it is a development build; that decision is revisited before any signed release.
+
+App Transport Security is relaxed for web content only (`NSAllowsArbitraryLoadsInWebContent` in `App/Info.plist`), because a browser has to open plain-`http` sites. The app's own requests still require HTTPS.

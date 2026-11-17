@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>ArcX</title>
+<style>
+  :root {
+    --bg: #f4f2ee;
+    --ink: #1d1c1a;
+    --muted: #6d6a64;
+    --accent: #3b5bdb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1d; --ink: #ecebe8; --muted: #9a9890; --accent: #7d95ff; }
+  }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, system-ui, sans-serif;
+  }
+  main { text-align: center; padding: 24px; }
+  .mark {
+    width: 64px; height: 64px; margin: 0 auto 20px;
+    border-radius: 18px;
+    background: linear-gradient(135deg, var(--accent), #e64980);
+  }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <div class="mark" aria-hidden="true"></div>
+  <h1>ArcX</h1>
+  <p>A small browser. Set <code>ARCX_START_URL</code> to open somewhere else.</p>
+</main>
+</body>
+</html>
