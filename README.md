@@ -20,6 +20,12 @@ macOS 26 or later on Apple Silicon, Xcode 26, and [XcodeGen](https://github.com/
 open .build/xcode/Build/Products/Debug/ArcX.app
 ```
 
+The window opens a built-in start page. To open somewhere else, set `ARCX_START_URL`; it is read like text typed into the address bar, so a URL, a bare domain or a search all work:
+
+```bash
+ARCX_START_URL=localhost:3000 .build/xcode/Build/Products/Debug/ArcX.app/Contents/MacOS/ArcX
+```
+
 `verify.sh` generates the Xcode project, builds everything and runs the tests. To work in Xcode, run `xcodegen generate` and open `ArcX.xcodeproj`.
 
 ## Layout
@@ -27,7 +33,10 @@ open .build/xcode/Build/Products/Debug/ArcX.app
 ```
 App/                        the macOS app: windows, views, and the WebKit layer
   Engine/                   the only place that imports WebKit
-  Debug/                    the in-app self-test
+  Windows/                  window controllers
+  UI/                       views
+  Resources/                the built-in start page
+  Debug/                    the in-app self-test (Debug builds only)
 Packages/ArcXKit/
   Sources/ArcXCore/         tabs, groups, session, history, URL and search logic
   Tests/                    unit and budget tests
@@ -42,7 +51,7 @@ docs/architecture.md        how the pieces fit, with a diagram
 | `./Scripts/verify.sh` | Package build, all tests, app build |
 | `./Scripts/verify.sh --ui` | The above, plus the in-app smoke test |
 
-The in-app tests drive the real app against local fixture pages and render the window to PNG files in `.build/selftest/`, so they need no accessibility or screen-recording permission and never touch the network. They run in the background: no Dock icon, no visible window, never taking focus, and with their own preferences and data. Checks that need keyboard focus are listed as `skip`; run `ARCX_FOREGROUND=1 Scripts/selftest.sh` to watch the run and include them.
+The in-app tests drive the real app against local fixture pages and render the page to PNG files in `.build/selftest/`, so they need no accessibility or screen-recording permission and never touch the network. They run in the background: no Dock icon, no visible window, never taking focus, and with their own preferences and data. Checks that need keyboard focus are listed as `skip`; run `ARCX_FOREGROUND=1 Scripts/selftest.sh` to watch the run and include them.
 
 ## Roadmap
 
