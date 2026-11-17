@@ -30,7 +30,23 @@ enum Fixtures {
         #band{height:30vh;background:#2f9e44}</style></head>
         <body><div id="band"></div><h1>Links</h1>
         <p><a id="blank" href="fixture%20c.html" target="_blank">Fixture C in a new tab</a></p>
-        <p><a id="plain" href="b.html">Fixture B</a></p></body></html>
+        <p><a id="plain" href="b.html">Fixture B</a></p>
+        <p><button id="open" onclick="window.open('a.html')">window.open on click</button></p></body></html>
+        """
+    /// Tries to open windows with no user gesture: `window.open` and a `target=_blank` click
+    /// from its own load script, and `window.open` from a timer. All must be blocked.
+    static let popups = """
+        <!doctype html><html><head><meta charset="utf-8"><title>Pop-ups</title></head>
+        <body><h1>Pop-ups</h1><a id="auto" href="b.html" target="_blank">auto</a>
+        <script>
+        window.popupResults = [];
+        window.popupResults.push(window.open('a.html') === null ? 'blocked' : 'opened');
+        document.getElementById('auto').click();
+        setTimeout(function () {
+          window.popupResults.push(window.open('b.html') === null ? 'blocked' : 'opened');
+          window.popupsDone = true;
+        }, 100);
+        </script></body></html>
         """
 
     /// The fixture files, written into `<output>/fixtures/` by the main phase and reused by later ones.
@@ -40,6 +56,7 @@ enum Fixtures {
         var pageB: URL { directory.appendingPathComponent("b.html") }
         var pageC: URL { directory.appendingPathComponent("fixture c.html") }
         var links: URL { directory.appendingPathComponent("links.html") }
+        var popups: URL { directory.appendingPathComponent("popups.html") }
 
         init(output: URL) { directory = output.appendingPathComponent("fixtures", isDirectory: true) }
 
@@ -49,6 +66,7 @@ enum Fixtures {
             try Fixtures.pageB.write(to: pageB, atomically: true, encoding: .utf8)
             try Fixtures.pageC.write(to: pageC, atomically: true, encoding: .utf8)
             try Fixtures.links.write(to: links, atomically: true, encoding: .utf8)
+            try Fixtures.popups.write(to: popups, atomically: true, encoding: .utf8)
         }
     }
 }
@@ -149,9 +167,11 @@ struct Pixels {
     }
 }
 
-/// A picture of the whole window: AppKit and SwiftUI drawn by `cacheDisplay` (which leaves web
-/// content blank, because WebKit draws in another process), with WebKit's own snapshot of the
-/// visible page painted into the page's rectangle on top.
+/// A picture of the whole window, composed because no single capture holds it all:
+/// - the window frame through `cacheDisplay`, which leaves web content blank (WebKit draws in
+///   another process) and, in a visible macOS 26 window, the Liquid Glass sidebar blank too;
+/// - the sidebar's hosting view captured on its own, then the traffic lights again on top of it;
+/// - WebKit's own snapshot of the visible page, in the page's rectangle.
 struct WindowPicture {
     let pixels: Pixels
     /// The sidebar and the content pane, in pixels with the origin at the top left.
@@ -167,6 +187,24 @@ struct WindowPicture {
         let bounds = frameView.bounds
         guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { throw CocoaError(.featureUnsupported) }
         frameView.cacheDisplay(in: bounds, to: rep)
+
+        // A visible Liquid Glass sidebar draws its content through the glass container, which
+        // `cacheDisplay` of the frame leaves blank; the hosting view captured on its own draws it.
+        let sidebarView = controller.sidebarItem.viewController.view
+        var sidebar: (rep: NSBitmapImageRep, rect: NSRect)?
+        if let sidebarRep = sidebarView.bitmapImageRepForCachingDisplay(in: sidebarView.bounds) {
+            sidebarView.cacheDisplay(in: sidebarView.bounds, to: sidebarRep)
+            sidebar = (sidebarRep, sidebarView.convert(sidebarView.bounds, to: frameView))
+        }
+
+        // That capture is opaque, so the traffic lights are drawn again on top of it.
+        let lights: [(rep: NSBitmapImageRep, rect: NSRect)] = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+            .compactMap { button in
+                guard let rep = button.bitmapImageRepForCachingDisplay(in: button.bounds) else { return nil }
+                button.cacheDisplay(in: button.bounds, to: rep)
+                return (rep, button.convert(button.bounds, to: frameView))
+            }
 
         var page: (image: NSImage, rect: NSRect)?
         if let pageView = controller.container.content, let session = controller.tabs.selectedSession {
@@ -190,6 +228,8 @@ struct WindowPicture {
             NSRect(origin: .zero, size: bounds.size).fill()
         }
         rep.draw(in: NSRect(origin: .zero, size: bounds.size))
+        if let sidebar { sidebar.rep.draw(in: drawingRect(sidebar.rect)) }
+        for light in lights { light.rep.draw(in: drawingRect(light.rect)) }
         if let page { page.image.draw(in: drawingRect(page.rect)) }
         NSGraphicsContext.restoreGraphicsState()
 
@@ -203,6 +243,32 @@ struct WindowPicture {
         }
         return WindowPicture(pixels: pixels, sidebar: pixelRect(of: controller.sidebarItem.viewController.view),
                              content: pixelRect(of: controller.container))
+    }
+}
+#endif
+
+#if DEBUG
+/// A text dump of a window's views: class, frame in window coordinates, hidden/alpha, and for
+/// controls and tables what they hold. Written next to the PNGs so layout can be checked when a
+/// picture cannot show it (a visible glass sidebar draws nothing through `cacheDisplay`).
+@MainActor
+enum ViewTree {
+    static func dump(_ window: NSWindow) -> String {
+        var lines: [String] = ["window \(window.frame) contentLayoutRect \(window.contentLayoutRect) key=\(window.isKeyWindow)"]
+        func visit(_ view: NSView, depth: Int) {
+            guard depth < 40 else { return }
+            var line = String(repeating: "  ", count: depth) + String(describing: type(of: view))
+            line += " \(view.convert(view.bounds, to: nil).integral)"
+            if view.isHidden { line += " HIDDEN" }
+            if view.alphaValue < 1 { line += " alpha=\(view.alphaValue)" }
+            if let field = view as? NSTextField { line += " text='\(field.stringValue)' placeholder='\(field.placeholderString ?? "")'" }
+            if let table = view as? NSTableView { line += " rows=\(table.numberOfRows)" }
+            if let layer = view.layer, layer.opacity < 1 { line += " layerOpacity=\(layer.opacity)" }
+            lines.append(line)
+            for sub in view.subviews { visit(sub, depth: depth + 1) }
+        }
+        if let root = window.contentView?.superview ?? window.contentView { visit(root, depth: 0) }
+        return lines.joined(separator: "\n") + "\n"
     }
 }
 #endif

@@ -38,9 +38,13 @@ struct RestorePhase {
         let others = expected.tabs.filter { $0.id != selected.id }
         run.check(others.allSatisfy { sessions.existingSession(for: $0.id) == nil } && sessions.createdCount == 1,
                   "restored tabs the user has not selected still have no web view after the selected one loaded")
+        run.check(abs(run.controller.sidebarWidth - 300) < 0.5,
+                  "the sidebar opens at the width the last launch left (300 pt), got \(run.controller.sidebarWidth)")
+        let problems = run.sidebarProblems()
+        run.check(problems.isEmpty, "the restored sidebar lays out a row for every saved tab" + (problems.isEmpty ? "" : ": " + problems.joined(separator: "; ")))
         if let picture = await run.windowSnapshot("restore-window") {
             let ink = picture.pixels.inkCount(in: picture.sidebar)
-            run.check(ink >= 400, "the restored sidebar is drawn: \(ink) px of text and controls")
+            run.check(ink >= 400, "the restored sidebar's capture is drawn: \(ink) px of text and controls")
         }
 
         if let other = others.first {

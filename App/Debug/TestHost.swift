@@ -40,8 +40,9 @@ enum TestHost {
 
     static func willFinishLaunching() {
         guard isActive else { return }
-        // Each run starts from empty preferences, like a first launch.
-        UserDefaults.standard.removePersistentDomain(forName: defaultsSuite)
+        // A run starts from empty preferences, like a first launch. Later phases are relaunches,
+        // so they keep what the first phase saved (the sidebar width, for one).
+        if selfTestPhase == "main" { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
         // Light appearance whatever the user's setting, so snapshots and their pixel checks are the
         // same on every machine. Dark Mode is therefore not covered by a test run.
         NSApp.appearance = NSAppearance(named: .aqua)

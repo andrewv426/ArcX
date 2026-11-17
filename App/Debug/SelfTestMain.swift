@@ -42,7 +42,7 @@ struct MainPhase {
         check(AppPaths.dataDirectory.path.hasPrefix(run.output.path) && run.context.store.fileURL.path.hasPrefix(run.output.path),
               "a test run keeps its session inside the output folder: \(AppPaths.dataDirectory.path)")
         check(abs(controller.sidebarWidth - BrowserWindowController.defaultSidebarWidth) < 1,
-              "the sidebar opens \(Int(BrowserWindowController.defaultSidebarWidth)) pt wide, got \(controller.sidebarWidth)")
+              "the sidebar opens \(Int(BrowserWindowController.defaultSidebarWidth)) pt wide at the divider, got \(controller.sidebarWidth)")
         check(!controller.sidebarItem.isCollapsed && controller.container.topInset == 0,
               "with the sidebar shown, the page reaches the top of the window (inset \(controller.container.topInset))")
         check(controller.sidebarItem.behavior == .sidebar, "the sidebar is a system sidebar split item")
@@ -73,8 +73,9 @@ struct MainPhase {
         check(agent.contains("Safari/") && agent.contains("Version/"), "the user agent looks like Safari: \(agent)")
         check(!WebViewFactory.storesDataOnDisk, "web data is not persistent in a test run")
         check(AppDefaults.store !== UserDefaults.standard, "a test run uses its own preferences (\(TestHost.defaultsSuite))")
-        check(AppDefaults.store.double(forKey: BrowserWindowController.sidebarWidthKey) == 240,
-              "the sidebar width is remembered in the test preferences")
+        let stored = AppDefaults.store.double(forKey: BrowserWindowController.sidebarWidthKey)
+        check(stored == Double(controller.sidebarWidth.rounded()),
+              "the sidebar width is remembered in the test preferences: \(stored), divider at \(controller.sidebarWidth)")
         return true
     }
 
@@ -182,15 +183,21 @@ struct MainPhase {
     // MARK: The window, drawn
 
     private func windowPicture() async {
+        if let window = controller.window {
+            try? ViewTree.dump(window).write(to: run.output.appendingPathComponent("04-window-tabs-views.txt"), atomically: true, encoding: .utf8)
+        }
+        let problems = run.sidebarProblems()
+        check(problems.isEmpty, "the sidebar is laid out: address field, one row per tab plus New Tab, "
+              + "nothing under the traffic lights" + (problems.isEmpty ? "" : ": " + problems.joined(separator: "; ")))
         guard let picture = await run.windowSnapshot("04-window-tabs") else { return }
         let pixels = picture.pixels
         let sidebarInk = pixels.inkCount(in: picture.sidebar)
         check(picture.sidebar.width > 100 && sidebarInk >= 400,
-              "the sidebar is drawn, not blank: \(sidebarInk) px of text and controls in \(Int(picture.sidebar.width))×\(Int(picture.sidebar.height)) px")
+              "the sidebar's own capture is drawn, not blank: \(sidebarInk) px of text and controls in \(Int(picture.sidebar.width))×\(Int(picture.sidebar.height)) px")
         let pink = pixels.share(of: (0xE6, 0x49, 0x80), in: picture.content)
         check(pink > 0.25, "the window picture shows the selected page beside the sidebar: pink covers \(Int(pink * 100))% of the content pane")
         check(pixels.share(of: (0xE6, 0x49, 0x80), in: picture.sidebar) < 0.01, "the page does not spill into the sidebar")
-        run.note("04-window-tabs.png is composed: AppKit/SwiftUI via cacheDisplay, the page via WebKit's snapshot drawn into the page's frame")
+        run.note("04-window-tabs.png is composed: the window frame and the sidebar's hosting view via cacheDisplay, the page via WebKit's snapshot, each drawn into its own frame")
     }
 
     // MARK: Links that open tabs
@@ -200,11 +207,12 @@ struct MainPhase {
         session.load(files.links)
         check(await run.settled(session, at: files.links, title: "Links"), "the links page loads")
 
+        // Clicks are synthesised mouse events sent to the web view, so they are user gestures.
         var count = state.tabs.count
-        _ = await run.javaScript(session, "document.getElementById('blank').click(); return 'clicked'")
+        _ = await run.click("blank", in: session)
         if await run.waitFor(10, { state.tabs.count == count + 1 }), let id = state.selectedTabID, id != opener {
             check(state.index(of: id) == (state.index(of: opener) ?? -2) + 1 && samePage(state.tab(id)?.url, files.pageC),
-                  "a target=_blank link opens a new selected tab right after its opener")
+                  "clicking a target=_blank link opens a new selected tab right after its opener")
             if let opened = sessions.existingSession(for: id) {
                 check(await run.settled(opened, at: files.pageC, title: "Fixture C"), "the new tab loads the link")
             } else {
@@ -212,31 +220,27 @@ struct MainPhase {
             }
             check(samePage(session.url, files.links), "the opener stays on its page")
         } else {
-            check(false, "a target=_blank link opens a new selected tab (tabs: \(state.tabs.count))")
+            check(false, "clicking a target=_blank link opens a new selected tab (tabs: \(state.tabs.count))")
         }
 
         state.select(opener)
         count = state.tabs.count
-        _ = await run.javaScript(session, "window.open('a.html'); return 'opened'")
+        _ = await run.click("open", in: session)
         if await run.waitFor(10, { state.tabs.count == count + 1 }), let id = state.selectedTabID, id != opener,
            let opened = sessions.existingSession(for: id) {
-            check(await run.settled(opened, at: files.pageA, title: "Fixture A"), "window.open opens a new selected tab on its URL")
+            check(await run.settled(opened, at: files.pageA, title: "Fixture A"), "window.open from a click opens a new selected tab on its URL")
         } else {
-            check(false, "window.open opens a new selected tab (tabs: \(state.tabs.count))")
+            check(false, "window.open from a click opens a new selected tab (tabs: \(state.tabs.count))")
         }
+
+        await popupsWithoutGesture()
 
         // ⌘-click: an AppKit mouse-down/up pair with ⌘ held, sent straight to the web view at the
         // link's position (the window server is bypassed because test windows ignore the mouse).
         state.select(opener)
         count = state.tabs.count
         let created = sessions.createdCount
-        let position = await run.javaScript(session, """
-            const r = document.getElementById('plain').getBoundingClientRect();
-            return (r.left + r.width / 2) + ',' + (r.top + r.height / 2)
-            """)?.split(separator: ",").compactMap { Double($0) } ?? []
-        if position.count == 2 {
-            session.sendClick(atPagePoint: CGPoint(x: position[0], y: position[1]), modifiers: .command)
-        }
+        let clicked = await run.click("plain", in: session, modifiers: .command)
         if await run.waitFor(10, { state.tabs.count == count + 1 }),
            let id = state.tabs.first(where: { samePage($0.url, files.pageB) && sessions.existingSession(for: $0.id) == nil })?.id {
             check(state.selectedTabID == opener && state.index(of: id) == (state.index(of: opener) ?? -2) + 1,
@@ -246,9 +250,32 @@ struct MainPhase {
             try? await Task.sleep(for: .milliseconds(300))
             check(samePage(session.url, files.links), "the ⌘-clicked link did not navigate the opener")
         } else {
-            check(false, "a ⌘-click (synthesised NSEvent at \(position)) opens a background tab (tabs: \(state.tabs.count), opener at \(session.url?.lastPathComponent ?? "nil"))")
+            check(false, "a ⌘-click (synthesised NSEvent, link found: \(clicked)) opens a background tab (tabs: \(state.tabs.count), opener at \(session.url?.lastPathComponent ?? "nil"))")
         }
         run.note("⌘-click through the window server (a physical mouse) is not verified: test windows ignore the mouse")
+    }
+
+    /// A page may not open tabs on its own: `window.open` and a `target=_blank` click from its load
+    /// script, and `window.open` from a timer, are all blocked. Then, for the record, whether a
+    /// `window.open` run by the app through `callAsyncJavaScript` counts as a user gesture.
+    private func popupsWithoutGesture() async {
+        guard let id = state.selectedTabID, let session = sessions.existingSession(for: id) else { return }
+        let count = state.tabs.count
+        session.load(files.popups)
+        check(await run.settled(session, at: files.popups, title: "Pop-ups"), "a page that tries to open pop-ups on load loads")
+        _ = await run.waitFor(5) { false }
+        let results = await run.javaScript(session, "return window.popupsDone ? window.popupResults.join(',') : 'not done'")
+        check(state.tabs.count == count && state.selectedTabID == id,
+              "window.open and a target=_blank click from a page's load script, and window.open from a timer, open no tab (tabs \(count) → \(state.tabs.count))")
+        check(results == "blocked,blocked", "the page sees both window.open calls return null: \(results ?? "nil")")
+
+        _ = await run.javaScript(session, "window.open('a.html'); return 'called'")
+        let opened = await run.waitFor(3) { state.tabs.count == count + 1 }
+        run.note("window.open run by the app through callAsyncJavaScript \(opened ? "opens a tab: WebKit treats it as a user gesture" : "is blocked like a page script")")
+        if opened, let extra = state.selectedTabID, extra != id { state.closeTab(extra) }
+        state.select(id)
+        session.load(files.links)
+        _ = await run.settled(session, at: files.links, title: "Links")
     }
 
     // MARK: Order and selection
@@ -340,6 +367,7 @@ struct MainPhase {
 
     private func collapsedSidebar() async {
         let titlebar = controller.titlebarHeight
+        let widthBefore = controller.sidebarWidth
         check(titlebar >= 20, "the title bar area is measured: \(titlebar) pt")
         controller.splitViewController.toggleSidebar(nil)
         // Collapsing animates; wait until the content pane has reached the window's left edge.
@@ -360,7 +388,8 @@ struct MainPhase {
                 && abs(controller.container.convert(controller.container.bounds, to: nil).minX - controller.sidebarWidth) < 0.5
         },
               "Toggle Sidebar again shows it and the page returns to the top")
-        check(await run.waitFor(5) { abs(controller.sidebarWidth - 240) < 1 }, "the sidebar comes back at its width (\(controller.sidebarWidth) pt)")
+        check(await run.waitFor(5) { abs(controller.sidebarWidth - widthBefore) < 0.5 },
+              "the sidebar comes back at its width (\(controller.sidebarWidth) pt, was \(widthBefore) pt)")
     }
 
     // MARK: Zero tabs
@@ -396,6 +425,13 @@ struct MainPhase {
     /// Leaves three titled tabs with the middle one selected, flushes through the app's termination
     /// path and records what was saved.
     private func leaveSessionForRestore() async {
+        // Dragging the divider (the same call the split view makes): the new width is remembered
+        // exactly, and the restore phase must open at it.
+        controller.splitViewController.splitView.setPosition(300, ofDividerAt: 0)
+        check(await run.waitFor(5) {
+            abs(controller.sidebarWidth - 300) < 0.5 && AppDefaults.store.double(forKey: BrowserWindowController.sidebarWidthKey) == 300
+        }, "resizing the sidebar to 300 pt remembers 300, got \(controller.sidebarWidth) pt, stored \(AppDefaults.store.double(forKey: BrowserWindowController.sidebarWidthKey))")
+
         guard let a = state.selectedTabID else { return }
         let b = state.addTab(url: files.pageB, selected: false, after: a)
         let c = state.addTab(url: files.pageC, selected: true, after: b)

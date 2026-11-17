@@ -160,5 +160,75 @@ final class SelfTestRun {
     }
 
     var expectedSessionFile: URL { output.appendingPathComponent("expected-session.json") }
+
+    /// Clicks an element of the page by ID with a synthesised mouse event (a user gesture),
+    /// returning false if the element was not found.
+    func click(_ id: String, in session: TabSession, modifiers: NSEvent.ModifierFlags = []) async -> Bool {
+        let position = await javaScript(session, """
+            const r = document.getElementById('\(id)').getBoundingClientRect();
+            return (r.left + r.width / 2) + ',' + (r.top + r.height / 2)
+            """)?.split(separator: ",").compactMap { Double($0) } ?? []
+        guard position.count == 2 else { return false }
+        session.sendClick(atPagePoint: CGPoint(x: position[0], y: position[1]), modifiers: modifiers)
+        return true
+    }
+
+    /// Checks the sidebar from its views rather than its pixels, because a visible Liquid Glass
+    /// sidebar cannot be captured reliably: it is in the window and shown, the address field and
+    /// one list row per tab (plus New Tab) are laid out inside it, and no control sits under the
+    /// traffic lights. Row titles are not read here: SwiftUI builds its accessibility tree only when
+    /// an accessibility client asks, so a test cannot read them without one. Returns what is wrong.
+    func sidebarProblems() -> [String] {
+        guard let window = controller.window else { return ["no window"] }
+        var problems: [String] = []
+        let host = controller.sidebarItem.viewController.view
+        let hostRect = host.convert(host.bounds, to: nil)
+        if host.window !== window || host.isHiddenOrHasHiddenAncestor || hostRect.width < 100 {
+            problems.append("the sidebar's view is not shown (\(hostRect))")
+        }
+        var ancestor: NSView? = host
+        while let view = ancestor, view !== window.contentView?.superview {
+            if view.alphaValue < 0.01 { problems.append("\(type(of: view)) is transparent") }
+            ancestor = view.superview
+        }
+
+        if let field = controller.addressField.field {
+            let rect = field.convert(field.bounds, to: nil)
+            if field.window !== window || field.isHiddenOrHasHiddenAncestor || rect.width < 100 || !hostRect.contains(rect) {
+                problems.append("the address field is not laid out inside the sidebar (\(rect) in \(hostRect))")
+            }
+        } else {
+            problems.append("the address field does not exist")
+        }
+
+        func descendants(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap(descendants) }
+        let all = descendants(host)
+        if let table = all.compactMap({ $0 as? NSTableView }).first {
+            let expectedRows = state.tabs.count + 1
+            if table.numberOfRows != expectedRows {
+                problems.append("the list has \(table.numberOfRows) rows for \(state.tabs.count) tabs plus New Tab")
+            }
+            for row in 0..<min(table.numberOfRows, expectedRows) {
+                let rect = table.convert(table.rect(ofRow: row), to: nil)
+                if table.rowView(atRow: row, makeIfNecessary: false) == nil || !hostRect.contains(rect) || rect.height < 10 {
+                    problems.append("row \(row) is not laid out in the sidebar (\(rect))")
+                }
+            }
+        } else {
+            problems.append("the tab list has no table")
+        }
+
+        let lights = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { window.standardWindowButton($0) }
+            .map { $0.convert($0.bounds, to: nil) }
+            .reduce(NSRect.null) { $0.union($1) }
+        for control in all.compactMap({ $0 as? NSControl }) where !(control is NSTableView) && !(control is NSScroller) {
+            let rect = control.convert(control.bounds, to: nil)
+            if !control.isHiddenOrHasHiddenAncestor, rect.intersects(lights) {
+                problems.append("\(type(of: control)) at \(rect) sits under the traffic lights at \(lights)")
+            }
+        }
+        return problems
+    }
 }
 #endif
