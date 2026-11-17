@@ -1,0 +1,51 @@
+name: ArcX
+options:
+  bundleIdPrefix: app.arcx
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  ArcXKit:
+    path: Packages/ArcXKit
+targets:
+  ArcX:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+    dependencies:
+      - package: ArcXKit
+        product: ArcXCore
+    # No App Sandbox entitlements yet: the self-test writes into .build/, and web content is
+    # sandboxed by WebKit's own processes regardless. Revisited before any signed release.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.arcx.ArcX
+        GENERATE_INFOPLIST_FILE: YES
+        # Merged into the generated Info.plist; holds only what build settings cannot express.
+        INFOPLIST_FILE: App/Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: ArcX
+        # There is no browser category; Safari ships with this one.
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+schemes:
+  ArcX:
+    build:
+      targets:
+        ArcX: all
+    run:
+      config: Debug
