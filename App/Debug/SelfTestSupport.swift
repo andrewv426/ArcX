@@ -2,171 +2,9 @@
 import AppKit
 import ArcXCore
 
-/// An in-process smoke test, run with `ARCX_SELFTEST=<output dir>` (see `Scripts/selftest.sh`).
-///
-/// It drives the real window and `TabSession` against local fixture pages written into the output
-/// directory (never the network), renders the page to PNG files, and writes `result.txt`: one line
-/// per check and a final `RESULT pass=N fail=N skip=N`. The process exits non-zero on any failure.
-@MainActor
-enum SelfTest {
-    static func run(controller: BrowserWindowController, output: URL) async {
-        try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        let session = controller.session
-        var log: [String] = []
-        var passed = 0, failed = 0, skipped = 0
-
-        func check(_ condition: Bool, _ what: String) {
-            log.append((condition ? "ok   " : "FAIL ") + what)
-            if condition { passed += 1 } else { failed += 1 }
-        }
-        /// Some behaviour only happens when the app has keyboard focus. A run in the background never
-        /// takes focus, so such checks are skipped and listed, never passed silently.
-        /// Wrap them as `if needsFocus("what is checked") { ... }`.
-        func needsFocus(_ what: String) -> Bool {
-            if NSApp.isActive { return true }
-            log.append("skip \(what): needs keyboard focus; run ARCX_FOREGROUND=1 Scripts/selftest.sh")
-            skipped += 1
-            return false
-        }
-        /// Waits for a condition instead of guessing a delay, so the test is not timing-sensitive.
-        func waitFor(_ seconds: Double = 10, _ condition: () -> Bool) async -> Bool {
-            let deadline = Date().addingTimeInterval(seconds)
-            while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
-            return condition()
-        }
-        func settled(at url: URL? = nil, title: String) async -> Bool {
-            await waitFor {
-                !session.isLoading && session.title == title && (url == nil || session.url?.standardizedFileURL == url?.standardizedFileURL)
-            }
-        }
-        func javaScript(_ body: String) async -> String? {
-            do { return try await session.callJavaScript(body) as? String } catch {
-                log.append("note JavaScript failed: \(error.localizedDescription)")
-                return nil
-            }
-        }
-        /// Renders the page through WebKit, writes `<name>.png` and returns its pixels for checks.
-        func snapshot(_ name: String) async -> Pixels? {
-            do {
-                let image = try await session.snapshot()
-                guard let pixels = Pixels(image) else { check(false, "\(name): the snapshot has no bitmap"); return nil }
-                try pixels.png().write(to: output.appendingPathComponent("\(name).png"))
-                return pixels
-            } catch {
-                check(false, "\(name): snapshot failed: \(error.localizedDescription)")
-                return nil
-            }
-        }
-
-        // MARK: Fixtures
-
-        let fixtures = output.appendingPathComponent("fixtures", isDirectory: true)
-        try? FileManager.default.createDirectory(at: fixtures, withIntermediateDirectories: true)
-        let pageA = fixtures.appendingPathComponent("a.html")
-        let pageB = fixtures.appendingPathComponent("b.html")
-        let pageC = fixtures.appendingPathComponent("fixture c.html")
-        do {
-            try Fixtures.pageA.write(to: pageA, atomically: true, encoding: .utf8)
-            try Fixtures.pageB.write(to: pageB, atomically: true, encoding: .utf8)
-            try Fixtures.pageC.write(to: pageC, atomically: true, encoding: .utf8)
-        } catch {
-            check(false, "write the fixture pages: \(error.localizedDescription)")
-        }
-
-        // MARK: Start page
-
-        let startPage = Bundle.main.url(forResource: "start", withExtension: "html")
-        check(startPage != nil, "the start page is bundled")
-        let started = await settled(at: startPage, title: "ArcX")
-        check(started, "the start page loads and TabSession.title/url follow it, got '\(session.title)' at \(session.url?.absoluteString ?? "nil")")
-        check(!session.isLoading && session.estimatedProgress == 1, "loading ends: isLoading false, progress \(session.estimatedProgress)")
-        check(!session.canGoBack && !session.canGoForward, "nothing to go back or forward to on launch")
-        if let pixels = await snapshot("01-start-page") {
-            let share = pixels.dominantShare()
-            // The page is mostly background; its mark and text are about 1% of the pixels. Blank is 100%.
-            check(pixels.width > 100 && pixels.height > 100 && share < 0.997,
-                  "the start page snapshot is not blank (\(pixels.width)×\(pixels.height) px, most common colour "
-                  + String(format: "%.1f%%)", share * 100))
-        }
-
-        let agent = await javaScript("return navigator.userAgent") ?? ""
-        check(agent.contains("Safari/") && agent.contains("Version/"), "the user agent looks like Safari: \(agent)")
-        check(!WebViewFactory.storesDataOnDisk, "web data is not persistent in a test run")
-        check(AppDefaults.store !== UserDefaults.standard, "a test run uses its own preferences (\(TestHost.defaultsSuite))")
-
-        // MARK: Navigation
-
-        session.load(pageA)
-        check(await settled(at: pageA, title: "Fixture A"), "a local page loads, got '\(session.title)'")
-        check(await waitFor { controller.window?.title == "Fixture A" }, "the window title follows the page")
-        check(await javaScript("return document.getElementById('js').textContent + '|' + (6 * 7)") == "JavaScript ran|42",
-              "JavaScript runs in the page")
-        check(session.canGoBack && !session.canGoForward, "after one navigation: can go back, not forward")
-        if let pixels = await snapshot("02-fixture-a") {
-            let banner = pixels.share(of: (0x1E, 0x6F, 0xFF))
-            check(banner > 0.25 && banner < 0.6, "the page is painted: its blue banner covers \(Int(banner * 100))% of the snapshot (expected 25–60%)")
-        }
-
-        session.load(pageB)
-        check(await settled(at: pageB, title: "Fixture B"), "a second page loads")
-        check(session.canGoBack && !session.canGoForward, "on the second page: can go back, not forward")
-
-        session.goBack()
-        check(await settled(at: pageA, title: "Fixture A"), "goBack() returns to the first page")
-        check(await waitFor { session.canGoBack && session.canGoForward }, "after going back: can go back (to the start page) and forward")
-
-        session.goForward()
-        check(await settled(at: pageB, title: "Fixture B"), "goForward() returns to the second page")
-        check(await waitFor { session.canGoBack && !session.canGoForward }, "after going forward: nothing further forward")
-        if let pixels = await snapshot("03-fixture-b") {
-            let block = pixels.share(of: (0xE6, 0x49, 0x80))
-            check(block > 0.25, "the second page is painted: its pink block covers \(Int(block * 100))% of the snapshot")
-        }
-
-        // MARK: Address bar path: typed text -> URLClassifier -> TabSession.load
-
-        let typedFile = "  file://\(pageC.path)  "
-        if case .url(let url) = URLClassifier.classify(typedFile) {
-            session.load(url)
-            check(await settled(at: pageC, title: "Fixture C"), "a typed file:// path with a space loads through URLClassifier, got \(url.absoluteString)")
-        } else {
-            check(false, "URLClassifier reads a typed file:// path as an address")
-        }
-        let typedData = "data:text/html,<title>Data fixture</title><p>from a data URL</p>"
-        if case .url(let url) = URLClassifier.classify(typedData) {
-            session.load(url)
-            check(await settled(title: "Data fixture"), "a typed data: URL loads through URLClassifier, got '\(session.title)'")
-        } else {
-            check(false, "URLClassifier reads a typed data: URL as an address")
-        }
-        check(!session.isLoading && session.estimatedProgress == 1, "loading has ended after the last navigation")
-
-        // MARK: Focus and window state
-
-        if needsFocus("the browser window is key with the page as first responder"),
-           let window = controller.window {
-            let responder = window.firstResponder as? NSView
-            check(window.isKeyWindow && responder?.isDescendant(of: session.view) == true,
-                  "the browser window is key with the page as first responder")
-        }
-        if let problem = TestHost.savedWindowProblem() {
-            check(false, problem)
-        } else {
-            check(true, "a test run does not restore or save the window")
-        }
-        if TestHost.focusTakenCount > 0 {
-            log.append("note macOS made the background app active \(TestHost.focusTakenCount) time(s); it gave focus straight back")
-        }
-
-        log.append("RESULT pass=\(passed) fail=\(failed) skip=\(skipped)")
-        try? (log.joined(separator: "\n") + "\n").write(to: output.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
-        exit(failed == 0 ? 0 : 1)
-    }
-}
-
 /// Local pages the self-test loads. Each has a large block of one known colour, so a snapshot can
 /// tell a painted page from a blank one.
-private enum Fixtures {
+enum Fixtures {
     static let pageA = """
         <!doctype html><html><head><meta charset="utf-8"><title>Fixture A</title>
         <style>html,body{margin:0;height:100%;background:#fff;font:16px system-ui}
@@ -185,19 +23,57 @@ private enum Fixtures {
         <!doctype html><html><head><meta charset="utf-8"><title>Fixture C</title></head>
         <body><h1>Fixture C</h1><p>Loaded from a typed file:// path.</p></body></html>
         """
+    /// Links that ask for new tabs: `target=_blank`, and a plain link for the ⌘-click check.
+    static let links = """
+        <!doctype html><html><head><meta charset="utf-8"><title>Links</title>
+        <style>html,body{margin:0;height:100%;background:#fff;font:16px system-ui}
+        #band{height:30vh;background:#2f9e44}</style></head>
+        <body><div id="band"></div><h1>Links</h1>
+        <p><a id="blank" href="fixture%20c.html" target="_blank">Fixture C in a new tab</a></p>
+        <p><a id="plain" href="b.html">Fixture B</a></p></body></html>
+        """
+
+    /// The fixture files, written into `<output>/fixtures/` by the main phase and reused by later ones.
+    struct Files {
+        let directory: URL
+        var pageA: URL { directory.appendingPathComponent("a.html") }
+        var pageB: URL { directory.appendingPathComponent("b.html") }
+        var pageC: URL { directory.appendingPathComponent("fixture c.html") }
+        var links: URL { directory.appendingPathComponent("links.html") }
+
+        init(output: URL) { directory = output.appendingPathComponent("fixtures", isDirectory: true) }
+
+        func write() throws {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Fixtures.pageA.write(to: pageA, atomically: true, encoding: .utf8)
+            try Fixtures.pageB.write(to: pageB, atomically: true, encoding: .utf8)
+            try Fixtures.pageC.write(to: pageC, atomically: true, encoding: .utf8)
+            try Fixtures.links.write(to: links, atomically: true, encoding: .utf8)
+        }
+    }
+}
+
+/// True when two URLs name the same page, ignoring how a file path was spelled.
+func samePage(_ lhs: URL?, _ rhs: URL?) -> Bool {
+    guard let lhs, let rhs else { return lhs == nil && rhs == nil }
+    return lhs.standardizedFileURL.absoluteString == rhs.standardizedFileURL.absoluteString
 }
 
 /// A snapshot redrawn into a plain 8-bit sRGB bitmap, so colours can be compared with the CSS values
-/// the fixtures use whatever colour space WebKit rendered in.
-private struct Pixels {
+/// the fixtures use whatever colour space WebKit rendered in. Rows run top to bottom.
+struct Pixels {
     let width: Int
     let height: Int
     private let bytes: [UInt8]
     private let image: CGImage
 
     init?(_ snapshot: NSImage) {
-        guard let source = snapshot.cgImage(forProposedRect: nil, context: nil, hints: nil),
-              let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+        guard let source = snapshot.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        self.init(source)
+    }
+
+    init?(_ source: CGImage) {
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
         let width = source.width, height = source.height
         var buffer = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = buffer.withUnsafeMutableBytes { raw -> CGImage? in
@@ -221,27 +97,112 @@ private struct Pixels {
         return data
     }
 
-    /// The share of pixels within a small tolerance of `colour`.
-    func share(of colour: (UInt8, UInt8, UInt8), tolerance: Int = 10) -> Double {
-        var count = 0
-        for index in stride(from: 0, to: bytes.count, by: 4) {
-            if abs(Int(bytes[index]) - Int(colour.0)) <= tolerance,
-               abs(Int(bytes[index + 1]) - Int(colour.1)) <= tolerance,
-               abs(Int(bytes[index + 2]) - Int(colour.2)) <= tolerance {
-                count += 1
-            }
-        }
-        return Double(count) / Double(width * height)
+    /// Pixel rows and columns of `region` (in pixels, origin top left), clipped to the image.
+    private func span(_ region: CGRect?) -> (xs: Range<Int>, ys: Range<Int>) {
+        let full = CGRect(x: 0, y: 0, width: width, height: height)
+        let clipped = (region ?? full).intersection(full).integral
+        guard !clipped.isNull, clipped.width > 0, clipped.height > 0 else { return (0..<0, 0..<0) }
+        return (Int(clipped.minX)..<Int(clipped.maxX), Int(clipped.minY)..<Int(clipped.maxY))
     }
 
-    /// The share of the single most common colour. A blank (unpainted) snapshot is all one colour.
-    func dominantShare() -> Double {
-        var counts: [UInt32: Int] = [:]
-        for index in stride(from: 0, to: bytes.count, by: 4) {
-            let key = UInt32(bytes[index]) << 24 | UInt32(bytes[index + 1]) << 16 | UInt32(bytes[index + 2]) << 8 | UInt32(bytes[index + 3])
-            counts[key, default: 0] += 1
+    private func forEachPixel(in region: CGRect?, _ body: (UInt8, UInt8, UInt8, UInt8) -> Void) {
+        let (xs, ys) = span(region)
+        for y in ys {
+            for x in xs {
+                let index = (y * width + x) * 4
+                body(bytes[index], bytes[index + 1], bytes[index + 2], bytes[index + 3])
+            }
         }
-        return Double(counts.values.max() ?? 0) / Double(width * height)
+    }
+
+    private func area(_ region: CGRect?) -> Int {
+        let (xs, ys) = span(region)
+        return xs.count * ys.count
+    }
+
+    /// The share of pixels within a small tolerance of `colour`.
+    func share(of colour: (UInt8, UInt8, UInt8), tolerance: Int = 10, in region: CGRect? = nil) -> Double {
+        var count = 0
+        forEachPixel(in: region) { r, g, b, _ in
+            if abs(Int(r) - Int(colour.0)) <= tolerance, abs(Int(g) - Int(colour.1)) <= tolerance,
+               abs(Int(b) - Int(colour.2)) <= tolerance { count += 1 }
+        }
+        return Double(count) / Double(max(1, area(region)))
+    }
+
+    /// How many pixels clearly differ from the region's background (its most common colour): at
+    /// least `threshold` apart in some channel. A blank region has none; text, icons and blocks of
+    /// colour all count, while anti-aliasing noise and gradients in the background mostly do not.
+    /// An absolute count, so it does not drift with the window size the way a share does.
+    func inkCount(in region: CGRect? = nil, threshold: Int = 48) -> Int {
+        var counts: [UInt32: Int] = [:]
+        forEachPixel(in: region) { r, g, b, a in
+            counts[UInt32(r) << 24 | UInt32(g) << 16 | UInt32(b) << 8 | UInt32(a), default: 0] += 1
+        }
+        guard let background = counts.max(by: { $0.value < $1.value })?.key else { return 0 }
+        let br = Int(background >> 24 & 0xFF), bg = Int(background >> 16 & 0xFF), bb = Int(background >> 8 & 0xFF)
+        var ink = 0
+        forEachPixel(in: region) { r, g, b, _ in
+            if abs(Int(r) - br) >= threshold || abs(Int(g) - bg) >= threshold || abs(Int(b) - bb) >= threshold { ink += 1 }
+        }
+        return ink
+    }
+}
+
+/// A picture of the whole window: AppKit and SwiftUI drawn by `cacheDisplay` (which leaves web
+/// content blank, because WebKit draws in another process), with WebKit's own snapshot of the
+/// visible page painted into the page's rectangle on top.
+struct WindowPicture {
+    let pixels: Pixels
+    /// The sidebar and the content pane, in pixels with the origin at the top left.
+    let sidebar: CGRect
+    let content: CGRect
+
+    @MainActor
+    static func capture(_ controller: BrowserWindowController) async throws -> WindowPicture {
+        guard let window = controller.window, let frameView = window.contentView?.superview ?? window.contentView else {
+            throw CocoaError(.featureUnsupported)
+        }
+        frameView.layoutSubtreeIfNeeded()
+        let bounds = frameView.bounds
+        guard let rep = frameView.bitmapImageRepForCachingDisplay(in: bounds) else { throw CocoaError(.featureUnsupported) }
+        frameView.cacheDisplay(in: bounds, to: rep)
+
+        var page: (image: NSImage, rect: NSRect)?
+        if let pageView = controller.container.content, let session = controller.tabs.selectedSession {
+            page = (try await session.snapshot(), pageView.convert(pageView.bounds, to: frameView))
+        }
+        func drawingRect(_ rect: NSRect) -> NSRect {
+            frameView.isFlipped ? NSRect(x: rect.minX, y: bounds.height - rect.maxY, width: rect.width, height: rect.height) : rect
+        }
+
+        guard let output = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: rep.pixelsWide, pixelsHigh: rep.pixelsHigh,
+                                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+        else { throw CocoaError(.featureUnsupported) }
+        // The size (in points) must be set before the context is made, or drawing is not scaled.
+        output.size = bounds.size
+        guard let context = NSGraphicsContext(bitmapImageRep: output) else { throw CocoaError(.featureUnsupported) }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            NSColor.windowBackgroundColor.setFill()
+            NSRect(origin: .zero, size: bounds.size).fill()
+        }
+        rep.draw(in: NSRect(origin: .zero, size: bounds.size))
+        if let page { page.image.draw(in: drawingRect(page.rect)) }
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let cgImage = output.cgImage, let pixels = Pixels(cgImage) else { throw CocoaError(.featureUnsupported) }
+        let scale = CGFloat(pixels.width) / bounds.width
+        func pixelRect(of view: NSView) -> CGRect {
+            let rect = drawingRect(view.convert(view.bounds, to: frameView))
+            // Drawing rects have the origin at the bottom left; pixel rows start at the top.
+            return CGRect(x: rect.minX * scale, y: (bounds.height - rect.maxY) * scale,
+                          width: rect.width * scale, height: rect.height * scale)
+        }
+        return WindowPicture(pixels: pixels, sidebar: pixelRect(of: controller.sidebarItem.viewController.view),
+                             content: pixelRect(of: controller.container))
     }
 }
 #endif
