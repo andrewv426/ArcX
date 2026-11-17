@@ -1,18 +1,21 @@
 #!/bin/bash
 # The single gate. Default: package build + headless tests + app build into .build/xcode.
 #   --no-app    skip the Xcode app build
+#   --ui        also run the in-app smoke test (launches the app in the background for a few seconds)
 # Quiet on success; prints the full log of any step that fails.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PKG=Packages/ArcXKit
-APP=1
+APP=1; UI=0
 for arg in "$@"; do
   case "$arg" in
     --no-app) APP=0 ;;
+    --ui) UI=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
+if [[ $UI -eq 1 && $APP -eq 0 ]]; then echo "--ui needs the app build; drop --no-app" >&2; exit 2; fi
 
 step() { printf '\n==> %s\n' "$1"; }
 
@@ -41,6 +44,11 @@ if [[ $APP -eq 1 ]]; then
   filtered "BUILD SUCCEEDED" xcodebuild -project ArcX.xcodeproj -scheme ArcX -configuration Debug \
     -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath .build/xcode build -quiet
   echo "built .build/xcode/Build/Products/Debug/ArcX.app"
+fi
+
+if [[ $UI -eq 1 ]]; then
+  step "In-app smoke test (runs in the background; ARCX_FOREGROUND=1 to watch)"
+  Scripts/selftest.sh .build/selftest
 fi
 
 printf '\nverify: all green\n'

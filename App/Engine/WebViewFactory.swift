@@ -5,7 +5,12 @@ import WebKit
 @MainActor
 enum WebViewFactory {
     /// One configuration (and so one data store and process pool) for the whole app.
-    static let configuration: WKWebViewConfiguration = makeConfiguration(persistent: true)
+    /// Persistent for normal use; a throwaway in-memory store for test runs, so they never see
+    /// or touch the user's cookies, cache or local storage.
+    static let configuration: WKWebViewConfiguration = makeConfiguration(persistent: !isTestRun)
+
+    /// Whether cookies, cache and site data outlive the process.
+    static var storesDataOnDisk: Bool { configuration.websiteDataStore.isPersistent }
 
     static func makeConfiguration(persistent: Bool) -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
@@ -16,5 +21,13 @@ enum WebViewFactory {
         configuration.applicationNameForUserAgent = "Version/\(major).0 Safari/605.1.15"
         configuration.preferences.isElementFullscreenEnabled = true
         return configuration
+    }
+
+    private static var isTestRun: Bool {
+        #if DEBUG
+        TestHost.isActive
+        #else
+        false
+        #endif
     }
 }

@@ -6,12 +6,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: BrowserWindowController?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        #if DEBUG
+        TestHost.willFinishLaunching()
+        #endif
         NSApp.mainMenu = MainMenu.make()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let controller = BrowserWindowController(startURL: Self.startURL())
         windowController = controller
+        #if DEBUG
+        TestHost.didFinishLaunching()
+        if let output = TestHost.selfTestOutput {
+            controller.showWindow(nil)
+            Task { await SelfTest.run(controller: controller, output: output) }
+            return
+        }
+        #endif
         controller.showWindow(nil)
     }
 

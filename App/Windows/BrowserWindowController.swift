@@ -18,7 +18,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 480, height: 320)
         window.contentView = container
         window.center()
-        window.setFrameAutosaveName("BrowserWindow")
+        #if DEBUG
+        let isTestRun = TestHost.isActive
+        #else
+        let isTestRun = false
+        #endif
+        // A test run must never save its (off-screen) frame over the user's.
+        if !isTestRun { window.setFrameAutosaveName("BrowserWindow") }
         super.init(window: window)
         window.delegate = self
         container.show(session.view)
@@ -31,6 +37,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate {
 
     override func showWindow(_ sender: Any?) {
         guard let window else { return }
+        #if DEBUG
+        if TestHost.isBackground {
+            // Shown so AppKit and WebKit lay out and draw, but never brought forward or made key.
+            TestHost.prepare(window)
+            window.orderBack(nil)
+            window.makeFirstResponder(session.view)
+            return
+        }
+        #endif
         super.showWindow(sender)
         window.makeFirstResponder(session.view)
     }
