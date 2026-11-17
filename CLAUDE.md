@@ -31,15 +31,30 @@ Background mode gives these up. A background run does not verify any of them:
 
 | Not checked in the background | Why | How to check it |
 |---|---|---|
-| Anything that needs keyboard focus: SwiftUI key handlers (`onKeyPress`, `.keyboardShortcut`), `@FocusState`, focus rings, code that reads `isKeyWindow` or `NSApp.isActive` | The app never becomes active | `ARCX_FOREGROUND=1 Scripts/selftest.sh` (takes focus for a few seconds), or by hand |
+| Anything that needs keyboard focus: SwiftUI key handlers (`onKeyPress`, `.keyboardShortcut`), `@FocusState`, focus rings, code that reads `isKeyWindow` or `NSApp.isActive` | The app never becomes active | `Scripts/vm-selftest.sh` (the Tart VM, below), or by hand |
 | The real keyboard path: menu shortcuts (⌘T, ⌘L, ⌘W), the global Little Arc hotkey, input methods | The self-test calls actions directly or sends events straight to the window | By hand |
 | The mouse: clicks, hover, drag and drop of tabs, trackpad scrolling and swipe navigation | Test windows ignore the mouse | By hand, or computer use with the user's permission |
-| How it looks on the real screen: shadows, materials and Liquid Glass, animation, traffic-light placement, placement near screen edges or across displays | Snapshots render views to a bitmap, and the windows are transparent and off-screen | A foreground run, or by hand |
+| How it looks on the real screen: shadows, materials and Liquid Glass, animation, traffic-light placement, placement near screen edges or across displays | Snapshots render views to a bitmap, and the windows are transparent and off-screen | The PNGs from `Scripts/vm-selftest.sh` (a visible window), or by hand |
 | Real websites: logins, video, DRM, site-specific breakage | Tests load local fixtures only | By hand |
 | Being the default browser: links opened from other apps | It would change a system setting | By hand |
 | Exact performance numbers | The user's own work shares the CPU | Rerun when the machine is idle, or compare against `main` in the same session |
 
 In the self-test, wrap a check that needs focus in `if needsFocus("what it checks") { ... }`. Without focus it is logged as `skip …` and counted in the `RESULT` line, never passed silently. If macOS makes the background app active anyway, it gives focus straight back and the run logs a `note` line; mention that to the user too.
+
+### Foreground checks in the Tart VM
+
+A Tart macOS VM, `flotion-test`, is installed on this Mac (macOS 26, Xcode 26.5, XcodeGen; shared with the Flotion project). The app can take focus inside it without touching the user's screen, so use it instead of `ARCX_FOREGROUND=1` on this Mac, and without asking first:
+
+```bash
+Scripts/vm-selftest.sh
+```
+
+- It copies the checkout (uncommitted changes included) to `~/arcx-vm/<checkout name>` in the VM, runs `Scripts/verify.sh` there, then runs the self-test's first phase in the foreground and copies `result.txt`, `app.log` and the PNGs to `.build/vm-selftest/`. It fails if a check fails or is still skipped. Pass another checkout's path to test that one instead.
+- The VM must be running with its user logged in to the desktop. `tart list` shows its state; if it is stopped, start it with `tart run --no-graphics flotion-test &`. `ARCX_VM=<name>` picks another VM.
+- The app is started with `open`, through LaunchServices. Started as a plain child process (for example straight from `tart exec`), macOS does not let it take focus and the focus checks are skipped.
+- One app build at a time in the VM too: if another project's run is going (`tart exec flotion-test pgrep -fl xcodebuild`), wait for it.
+- The VM runs an older macOS than this Mac, and its window is visible, so system UI can look and lay out differently (Liquid Glass sidebars, for one). A check that passes here and fails there, or the other way round, is a finding to report, not noise to ignore.
+- It covers focus and the on-screen look. It still does not cover the real keyboard and mouse path, real websites or performance numbers.
 
 ### Tell the user what was not verified
 
