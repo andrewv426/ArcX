@@ -50,6 +50,7 @@ docs/architecture.md        how the pieces fit, with a diagram
 |---|---|
 | `./Scripts/verify.sh` | Package build, all tests, app build |
 | `./Scripts/verify.sh --ui` | The above, plus the in-app smoke test |
+| `Scripts/vm-selftest.sh` | `verify.sh` inside the Tart VM, then the in-app smoke test in the foreground there, so checks that need keyboard focus run too |
 
 The in-app tests drive the real app against local fixture pages and render the page to PNG files in `.build/selftest/`, so they need no accessibility or screen-recording permission and never touch the network. They run in the background: no Dock icon, no visible window, never taking focus, and with their own preferences and data. Checks that need keyboard focus are listed as `skip`; run `ARCX_FOREGROUND=1 Scripts/selftest.sh` to watch the run and include them.
 
