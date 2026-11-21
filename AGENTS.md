@@ -56,6 +56,17 @@ Scripts/vm-selftest.sh
 - The VM runs an older macOS than this Mac, and its window is visible, so system UI can look and lay out differently (Liquid Glass sidebars, for one). A check that passes here and fails there, or the other way round, is a finding to report, not noise to ignore.
 - It covers focus and the on-screen look. It still does not cover the real keyboard and mouse path, real websites or performance numbers.
 
+### Rebuilding `/Applications/ArcX.app` for manual testing
+
+When the user wants to test a PR branch by hand, build a Release bundle inside that branch's worktree and replace `/Applications/ArcX.app` with it:
+
+```bash
+(cd .worktrees/<name> && xcodegen generate --quiet && xcodebuild -project ArcX.xcodeproj -scheme ArcX -configuration Release -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath .build/xcode build -quiet)
+rm -rf /Applications/ArcX.app && cp -R .worktrees/<name>/.build/xcode/Build/Products/Release/ArcX.app /Applications/ArcX.app
+```
+
+Do not launch `/Applications/ArcX.app` yourself without asking first; let the user open it when ready.
+
 ### Tell the user what was not verified
 
 When a change touches anything in that table, or a run prints `skip` lines or misses a budget:
