@@ -24,6 +24,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private(set) var titlebarHeight: CGFloat = 0
     private var widthRestored = false
     private var collapseObservation: NSKeyValueObservation?
+    nonisolated(unsafe) private var resizeObserver: (any NSObjectProtocol)?
+
+    deinit {
+        if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+    }
 
     init(state: BrowserState, startPageURL: URL?) {
         self.state = state
@@ -47,7 +52,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let sidebarHost = NSHostingController(rootView: SidebarView(
             state: state, sessions: sessions, tabs: tabs, addressFocus: addressField, titlebar: metrics,
             newTab: { [weak self] in self?.newTab(nil) },
-            submitAddress: { [weak self] in self?.submitAddress($0) }
+            submitAddress: { [weak self] in self?.submitAddressFromField($0) },
+            cancelAddress: { [weak self] in self?.focusPage(leavingAddressField: true) }
         ))
         // The split view, not SwiftUI's ideal size, decides the sidebar's width.
         sidebarHost.sizingOptions = []
@@ -74,8 +80,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if !isTestRun { window.setFrameAutosaveName("BrowserWindow") }
 
         restoreSidebarWidth()
-        NotificationCenter.default.addObserver(forName: NSSplitView.didResizeSubviewsNotification,
-                                               object: splitViewController.splitView, queue: .main) { [weak self] _ in
+        resizeObserver = NotificationCenter.default.addObserver(forName: NSSplitView.didResizeSubviewsNotification,
+                                                                object: splitViewController.splitView, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.sidebarLayoutDidChange() }
         }
         collapseObservation = sidebarItem.observe(\.isCollapsed, options: [.new]) { [weak self] _, _ in
@@ -117,7 +123,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     /// ⌘L: the address field, with its text selected. Shows the sidebar first if it is collapsed.
     @objc func openLocation(_ sender: Any?) {
-        if sidebarItem.isCollapsed { sidebarItem.isCollapsed = false }
+        if sidebarItem.isCollapsed {
+            // Suppress saving transient uncollapse width until the remembered position is restored.
+            widthRestored = false
+            sidebarItem.isCollapsed = false
+            restoreSidebarWidth()
+        }
         addressField.focus(text: tabs.addressText, tabID: state.selectedTabID)
     }
 
@@ -125,24 +136,28 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     /// hand the keyboard to the page.
     @discardableResult
     func submitAddress(_ text: String) -> Bool {
-        guard tabs.submitAddress(text) else { return false }
+        submitAddressFromField(text) != nil
+    }
+
+    private func submitAddressFromField(_ text: String) -> String? {
+        guard let url = tabs.submitAddress(text) else { return nil }
         focusPage(leavingAddressField: true)
-        return true
+        return tabs.displayAddress(for: url)
     }
 
     /// ⌘W closes the selected tab, or the window when there are no tabs.
     @objc func closeTab(_ sender: Any?) {
         if let id = state.selectedTabID {
             state.closeTab(id)
-            focusPage()
+            focusPage(leavingAddressField: true)
         } else {
             window?.performClose(sender)
         }
     }
 
     @objc func reopenClosedTab(_ sender: Any?) {
-        state.reopenLastClosedTab()
-        focusPage()
+        guard state.reopenLastClosedTab() != nil else { return }
+        focusPage(leavingAddressField: true)
     }
 
     @objc func reloadPage(_ sender: Any?) { tabs.reload() }
@@ -150,19 +165,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     @objc func navigateForward(_ sender: Any?) { tabs.goForward() }
 
     @objc func selectNextTab(_ sender: Any?) {
+        let before = state.selectedTabID
         state.selectNextTab()
-        focusPage()
+        if state.selectedTabID != before { focusPage(leavingAddressField: true) }
     }
 
     @objc func selectPreviousTab(_ sender: Any?) {
+        let before = state.selectedTabID
         state.selectPreviousTab()
-        focusPage()
+        if state.selectedTabID != before { focusPage(leavingAddressField: true) }
     }
 
     /// ⌘1…⌘9; the menu item's tag is the number.
     @objc func selectTabByNumber(_ sender: Any?) {
         guard let number = (sender as? NSMenuItem)?.tag else { return }
-        if state.selectTab(atShortcutNumber: number) { focusPage() }
+        if state.selectTab(atShortcutNumber: number) { focusPage(leavingAddressField: true) }
     }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
@@ -182,8 +199,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     /// The selected page takes the keyboard, unless the user is typing in the address field.
     private func focusPage(leavingAddressField: Bool = false) {
-        guard let window, let page = container.content, leavingAddressField || !addressField.isEditing else { return }
-        window.makeFirstResponder(page)
+        guard let window, leavingAddressField || !addressField.isEditing else { return }
+        window.makeFirstResponder(container.content)
     }
 
     private func restoreSidebarWidth() {

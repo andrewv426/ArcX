@@ -37,7 +37,9 @@ struct AddressField: NSViewRepresentable {
     var text: String
     var tabID: UUID?
     let focus: AddressFieldFocus
-    let onSubmit: @MainActor (String) -> Void
+    /// Returns the address text to keep showing while navigation starts, or nil if input was ignored.
+    let onSubmit: @MainActor (String) -> String?
+    let onCancel: @MainActor () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -59,12 +61,21 @@ struct AddressField: NSViewRepresentable {
     }
 
     func updateNSView(_ field: NSTextField, context: Context) {
-        context.coordinator.parent = self
+        let coordinator = context.coordinator
+        coordinator.parent = self
         focus.field = field
         if tabID != focus.shownTabID {
             focus.shownTabID = tabID
+            coordinator.clearPendingSubmission()
             if field.currentEditor() != nil { field.abortEditing() }
             field.stringValue = text
+        } else if let pending = coordinator.pendingSubmittedText {
+            if text != coordinator.parentTextAtSubmit || text == pending {
+                coordinator.clearPendingSubmission()
+                if field.currentEditor() == nil, field.stringValue != text { field.stringValue = text }
+            } else if field.currentEditor() == nil, field.stringValue != pending {
+                field.stringValue = pending
+            }
         } else if field.currentEditor() == nil, field.stringValue != text {
             field.stringValue = text
         }
@@ -73,26 +84,49 @@ struct AddressField: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: AddressField
+        /// Held between Return and WebKit reporting the new URL, so ending editing or a SwiftUI
+        /// pass does not flash the previous URL back into the bar while a page loads.
+        fileprivate var pendingSubmittedText: String?
+        fileprivate var parentTextAtSubmit: String?
+        private var isSubmitting = false
 
         init(_ parent: AddressField) { self.parent = parent }
+
+        fileprivate func clearPendingSubmission() {
+            pendingSubmittedText = nil
+            parentTextAtSubmit = nil
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            clearPendingSubmission()
+        }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             switch selector {
             case #selector(NSResponder.insertNewline(_:)):
-                parent.onSubmit(control.stringValue)
+                isSubmitting = true
+                defer { isSubmitting = false }
+                if let submitted = parent.onSubmit(control.stringValue) {
+                    pendingSubmittedText = submitted
+                    parentTextAtSubmit = parent.text
+                    control.stringValue = submitted
+                }
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
+                clearPendingSubmission()
                 control.stringValue = parent.text
-                control.window?.makeFirstResponder(nil)
+                parent.onCancel()
                 return true
             default:
                 return false
             }
         }
 
-        /// Leaving the field shows the tab's URL again rather than half-typed text.
+        /// Leaving the field shows the tab's URL again rather than half-typed text, except when
+        /// Return just submitted a new navigation.
         func controlTextDidEndEditing(_ notification: Notification) {
-            (notification.object as? NSTextField)?.stringValue = parent.text
+            guard !isSubmitting else { return }
+            (notification.object as? NSTextField)?.stringValue = pendingSubmittedText ?? parent.text
         }
     }
 }

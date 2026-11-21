@@ -153,6 +153,43 @@ struct MainPhase {
             let editor = controller.addressField.field?.currentEditor()
             check(editor != nil && editor?.selectedRange.length == controller.addressField.text.utf16.count,
                   "⌘L focuses the address field and selects its text")
+            // Pressing Return through the field keeps the submitted URL displayed (no flash back)
+            // and hands focus to the page; Escape restores the URL and returns focus to the page.
+            if let field = controller.addressField.field, let textView = field.currentEditor() as? NSTextView {
+                let beforeURL = controller.addressField.text
+                textView.string = "  file://\(files.pageB.path)  "
+                _ = field.delegate?.control?(field, textView: textView, doCommandBy: #selector(NSResponder.insertNewline(_:)))
+                check(!controller.addressField.isEditing && controller.addressField.text == files.pageB.absoluteString,
+                      "Return submits without flashing back to the previous URL: '\(controller.addressField.text)'")
+                let responder = controller.window?.firstResponder as? NSView
+                check(responder?.isDescendant(of: session.view) == true,
+                      "Return hands keyboard focus back to the page")
+                _ = await run.settled(session, at: files.pageB, title: "Fixture B")
+
+                // Restore Data fixture so downstream checks see the expected page.
+                check(controller.submitAddress(beforeURL), "re-submits the data: URL")
+                _ = await run.settled(session, title: "Data fixture")
+
+                controller.openLocation(nil)
+                if let escapeEditor = field.currentEditor() as? NSTextView {
+                    escapeEditor.string = "half-typed"
+                    _ = field.delegate?.control?(field, textView: escapeEditor, doCommandBy: #selector(NSResponder.cancelOperation(_:)))
+                    let afterEscape = controller.window?.firstResponder as? NSView
+                    check(!controller.addressField.isEditing && controller.addressField.text == beforeURL
+                          && afterEscape?.isDescendant(of: session.view) == true,
+                          "Escape restores the URL and returns keyboard focus to the page")
+                }
+
+                // Switching tabs while editing the address field leaves editing and focuses the new page.
+                controller.openLocation(nil)
+                controller.selectPreviousTab(nil)
+                let switchedResponder = controller.window?.firstResponder as? NSView
+                let switchedPage = controller.container.content
+                check(!controller.addressField.isEditing && switchedPage != nil
+                      && switchedResponder?.isDescendant(of: switchedPage!) == true,
+                      "switching tabs while editing the address field focuses the newly selected page")
+                controller.selectNextTab(nil)
+            }
         }
     }
 
@@ -263,7 +300,12 @@ struct MainPhase {
         let count = state.tabs.count
         session.load(files.popups)
         check(await run.settled(session, at: files.popups, title: "Pop-ups"), "a page that tries to open pop-ups on load loads")
-        _ = await run.waitFor(5) { false }
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if await run.javaScript(session, "return window.popupsDone ? 'done' : ''") == "done" { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        try? await Task.sleep(for: .milliseconds(200))
         let results = await run.javaScript(session, "return window.popupsDone ? window.popupResults.join(',') : 'not done'")
         check(state.tabs.count == count && state.selectedTabID == id,
               "window.open and a target=_blank click from a page's load script, and window.open from a timer, open no tab (tabs \(count) → \(state.tabs.count))")
@@ -381,6 +423,17 @@ struct MainPhase {
             let gap = controller.container.bounds.height - page.frame.maxY
             check(abs(gap - titlebar) < 0.5, "the page's top edge sits \(gap) pt below the window top, clear of the traffic lights")
             _ = await run.windowSnapshot("05-window-sidebar-collapsed")
+            if run.needsFocus("⌘L expands a collapsed sidebar and focuses the address field") {
+                controller.openLocation(nil)
+                check(!controller.sidebarItem.isCollapsed && controller.addressField.isEditing
+                      && abs(controller.sidebarWidth - widthBefore) < 0.5,
+                      "⌘L expands a collapsed sidebar at its width (\(controller.sidebarWidth) pt) and focuses the address field")
+                controller.splitViewController.toggleSidebar(nil)
+                _ = await run.waitFor(5) {
+                    controller.sidebarItem.isCollapsed
+                        && controller.container.convert(controller.container.bounds, to: nil).minX < 0.5
+                }
+            }
         }
         controller.splitViewController.toggleSidebar(nil)
         check(await run.waitFor(5) {

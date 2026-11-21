@@ -42,24 +42,27 @@ final class TabCoordinator {
     }
 
     /// What the address field does with typed text: load it in the selected tab, or in a new
-    /// tab when there is none. Returns false (and does nothing) for blank text.
+    /// tab when there is none. Returns the destination URL, or nil for blank text.
     @discardableResult
-    func submitAddress(_ text: String) -> Bool {
-        guard let url = URLClassifier.destination(for: text) else { return false }
+    func submitAddress(_ text: String) -> URL? {
+        guard let url = URLClassifier.destination(for: text) else { return nil }
         if let tab = state.selectedTab {
             sessions.session(for: tab).load(url)
         } else {
             state.addTab(url: url)
         }
-        return true
+        return url
     }
 
-    /// What the address field shows for the selected tab: its URL, or nothing on the start page.
-    var addressText: String {
-        guard let url = state.selectedTab?.url,
+    /// What the address field shows for a URL: its string, or nothing on the start page.
+    func displayAddress(for url: URL?) -> String {
+        guard let url,
               url.standardizedFileURL != startPageURL?.standardizedFileURL else { return "" }
         return url.absoluteString
     }
+
+    /// What the address field shows for the selected tab: its URL, or nothing on the start page.
+    var addressText: String { displayAddress(for: state.selectedTab?.url) }
 
     func goBack() { selectedSession?.goBack() }
     func goForward() { selectedSession?.goForward() }

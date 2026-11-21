@@ -21,8 +21,10 @@ struct SidebarView: View {
     let addressFocus: AddressFieldFocus
     let titlebar: TitlebarMetrics
     let newTab: @MainActor () -> Void
-    /// What Return in the address field does (the window controller's `submitAddress`).
-    let submitAddress: @MainActor (String) -> Void
+    /// What Return in the address field does (returns the display URL while loading, or nil if ignored).
+    let submitAddress: @MainActor (String) -> String?
+    /// What Escape in the address field does (returns keyboard focus to the page).
+    let cancelAddress: @MainActor () -> Void
 
     private var selectedSession: TabSession? {
         state.selectedTabID.flatMap(sessions.existingSession(for:))
@@ -31,7 +33,8 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             navigationRow
-            AddressField(text: tabs.addressText, tabID: state.selectedTabID, focus: addressFocus, onSubmit: submitAddress)
+            AddressField(text: tabs.addressText, tabID: state.selectedTabID, focus: addressFocus,
+                         onSubmit: submitAddress, onCancel: cancelAddress)
                 .frame(height: 28)
                 .padding(.horizontal, 10)
             tabList

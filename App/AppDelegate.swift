@@ -20,11 +20,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("ArcX: the saved session could not be used (%@); moved to %@; starting fresh",
                   reason, movedTo?.path ?? "nowhere")
         }
-        let state = BrowserState.launching(from: loaded, startPage: Self.startPage, startURL: Self.startURL())
+        let startURL = Self.startURL()
+        let state = BrowserState.launching(from: loaded, startPage: Self.startPage, startURL: startURL)
         let saver = SessionSaver(state: state, store: store)
         self.saver = saver
-        // A first or recovered launch writes its fresh session soon, not only after a change.
-        if case .restored = loaded {} else { saver.setNeedsSave() }
+        // A first, recovered, or ARCX_START_URL launch writes its session soon, not only after another change.
+        if case .restored = loaded, startURL == nil {} else { saver.setNeedsSave() }
 
         let controller = BrowserWindowController(state: state, startPageURL: Self.startPage)
         windowController = controller
