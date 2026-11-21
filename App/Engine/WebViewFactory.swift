@@ -20,6 +20,10 @@ enum WebViewFactory {
         let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
         configuration.applicationNameForUserAgent = "Version/\(major).0 Safari/605.1.15"
         configuration.preferences.isElementFullscreenEnabled = true
+        // WebKit's macOS default lets scripts open windows without a click. Every window request
+        // becomes a tab here, so a page could open any number of tabs on load. Only a user
+        // gesture (a click, a key press) may open one.
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         return configuration
     }
 

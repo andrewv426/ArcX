@@ -11,6 +11,8 @@ import AppKit
 /// - checks that need keyboard focus cannot run, so `SelfTest` skips them and lists them in result.txt;
 /// - App Nap is held off so timers and page loads are not throttled while it is out of sight.
 ///
+/// Every test run (background or not) uses the light appearance, so snapshots are comparable.
+///
 /// A test run is the same app as a normal launch, so it must not restore or save windows. The script
 /// passes `-ApplePersistenceIgnoreState YES`, and every test window is non-restorable with no frame
 /// autosave name.
@@ -22,6 +24,8 @@ enum TestHost {
     nonisolated static let isActive = environment["ARCX_SELFTEST"] != nil
     static let isBackground = isActive && environment["ARCX_FOREGROUND"] != "1"
     static let selfTestOutput = environment["ARCX_SELFTEST"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    /// Which part of the self-test this launch runs (`main`, `restore`, `corrupt`); see `Scripts/selftest.sh`.
+    static let selfTestPhase = environment["ARCX_SELFTEST_PHASE"] ?? "main"
 
     /// Test runs read and write preferences here, never in the user's own domain.
     nonisolated static let defaultsSuite = "app.arcx.ArcX.tests"
@@ -36,8 +40,12 @@ enum TestHost {
 
     static func willFinishLaunching() {
         guard isActive else { return }
-        // Each run starts from empty preferences, like a first launch.
-        UserDefaults.standard.removePersistentDomain(forName: defaultsSuite)
+        // A run starts from empty preferences, like a first launch. Later phases are relaunches,
+        // so they keep what the first phase saved (the sidebar width, for one).
+        if selfTestPhase == "main" { UserDefaults.standard.removePersistentDomain(forName: defaultsSuite) }
+        // Light appearance whatever the user's setting, so snapshots and their pixel checks are the
+        // same on every machine. Dark Mode is therefore not covered by a test run.
+        NSApp.appearance = NSAppearance(named: .aqua)
         guard isBackground else { return }
         NSApp.setActivationPolicy(.accessory)
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical],
